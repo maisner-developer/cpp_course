@@ -1,0 +1,12 @@
+{
+  "configurations": [
+    {
+      "name": "Container",
+      "intelliSenseMode": "linux-gcc-x64",
+      "cppStandard": "c++23",
+      "cStandard": "c11",
+      "compilerPath": "/usr/bin/g++"
+    }
+  ],
+  "version": 4
+}
