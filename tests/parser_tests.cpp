@@ -5,6 +5,9 @@
 #include <cassert>
 #include <iostream>
 #include <string>
+#include <thread>
+#include <vector>
+#include <atomic>
 
 using json::ParseError;
 using json::ParseLimits;
@@ -165,6 +168,33 @@ static void test_schema_constraints_stage2() {
     assert(std::holds_alternative<json::SchemaError>(badObjRes));
 }
 
+static void test_multithreaded_parsing() {
+    const std::vector<std::string> inputs = {
+        "{\"a\":1}",
+        "[1,2,3]",
+        "\"text\"",
+        "true",
+        "{\"x\":[{\"y\":2}]}"
+    };
+
+    std::atomic<int> okCount{0};
+    std::vector<std::thread> threads;
+    threads.reserve(inputs.size());
+
+    for (const auto& s : inputs) {
+        threads.emplace_back([&]() {
+            auto r = json::parse_json(s);
+            if (std::holds_alternative<Value>(r))
+                okCount.fetch_add(1, std::memory_order_relaxed);
+        });
+    }
+
+    for (auto& t : threads)
+        t.join();
+
+    assert(okCount.load(std::memory_order_relaxed) == static_cast<int>(inputs.size()));
+}
+
 int main() {
     test_basic_object();
     test_array_and_string_escape();
@@ -177,6 +207,7 @@ int main() {
     test_unexpected_end();
     test_schema_type_required_properties_items_enum();
     test_schema_constraints_stage2();
+    test_multithreaded_parsing();
 
     std::cout << "All tests passed\n";
     return 0;
