@@ -15,11 +15,21 @@ namespace json {
     }
 
     void Tokenizer::skip_whitespace_() {
-        size_t i = 0;
-        while (i < buffer_.size() && std::isspace(static_cast<unsigned char>(buffer_[i]))) {
-            ++i;
+        while (pos_ < buffer_.size() && std::isspace(static_cast<unsigned char>(buffer_[pos_]))) {
+            ++pos_;
         }
-        buffer_.erase(0, i);
+        compact_buffer_();
+    }
+
+    void Tokenizer::compact_buffer_() {
+        if (pos_ == 0)
+            return;
+
+        constexpr size_t kMinCompact = 1 << 20; // 1 MB
+        if (pos_ >= kMinCompact && pos_ > buffer_.size() / 2) {
+            buffer_.erase(0, pos_);
+            pos_ = 0;
+        }
     }
 
     Token Tokenizer::peek_token() {
@@ -40,22 +50,22 @@ namespace json {
 
     Token Tokenizer::really_read_next_token_() {
         skip_whitespace_();
-        if (buffer_.empty()) {
+        if (pos_ >= buffer_.size()) {
             if (input_finished_)
                 return {TokenType::EndOfStream, "", ""};
             else
                 return {TokenType::NeedMoreData, "", ""};
         }
 
-        char c = buffer_[0];
+        char c = buffer_[pos_];
 
         switch (c) {
-            case '{': buffer_.erase(0,1); return {TokenType::LeftBrace, "", ""};
-            case '}': buffer_.erase(0,1); return {TokenType::RightBrace, "", ""};
-            case '[': buffer_.erase(0,1); return {TokenType::LeftBracket, "", ""};
-            case ']': buffer_.erase(0,1); return {TokenType::RightBracket, "", ""};
-            case ':': buffer_.erase(0,1); return {TokenType::Colon, "", ""};
-            case ',': buffer_.erase(0,1); return {TokenType::Comma, "", ""};
+            case '{': ++pos_; return {TokenType::LeftBrace, "", ""};
+            case '}': ++pos_; return {TokenType::RightBrace, "", ""};
+            case '[': ++pos_; return {TokenType::LeftBracket, "", ""};
+            case ']': ++pos_; return {TokenType::RightBracket, "", ""};
+            case ':': ++pos_; return {TokenType::Colon, "", ""};
+            case ',': ++pos_; return {TokenType::Comma, "", ""};
             case '\"': return parse_string_();
             default:
                 break;
@@ -64,35 +74,36 @@ namespace json {
         if (c == '-' || std::isdigit(static_cast<unsigned char>(c)))
             return parse_number_();
 
-        if (buffer_.rfind("true", 0) == 0)
+        if (buffer_.compare(pos_, 4, "true") == 0)
             return parse_literal_("true", TokenType::True);
 
-        if (buffer_.rfind("false", 0) == 0)
+        if (buffer_.compare(pos_, 5, "false") == 0)
             return parse_literal_("false", TokenType::False);
 
-        if (buffer_.rfind("null", 0) == 0)
+        if (buffer_.compare(pos_, 4, "null") == 0)
             return parse_literal_("null", TokenType::Null);
         return {TokenType::Error, "", "unexpected character", ErrorCode::UnexpectedToken};
     }
 
     Token Tokenizer::parse_literal_(const std::string& expected, TokenType type) {
-        if (buffer_.size() < expected.size()) {
+        if (buffer_.size() - pos_ < expected.size()) {
             if (input_finished_)
                 return {TokenType::Error, "", "unexpected end of input in literal", ErrorCode::UnexpectedEnd};
             else
                 return {TokenType::NeedMoreData, "", ""};
         }
 
-        if (buffer_.compare(0, expected.size(), expected) != 0)
+        if (buffer_.compare(pos_, expected.size(), expected) != 0)
             return {TokenType::Error, "", "invalid literal", ErrorCode::UnexpectedToken};
 
-        buffer_.erase(0, expected.size());
+        pos_ += expected.size();
+        compact_buffer_();
         return {type, "", ""};
     }
 
     Token Tokenizer::parse_string_() {
         std::string result;
-        size_t i = 1; // skip opening quote
+        size_t i = pos_ + 1; // skip opening quote
 
         auto hex_value = [](char ch) -> int {
             if (ch >= '0' && ch <= '9') return ch - '0';
@@ -147,7 +158,8 @@ namespace json {
             char c = buffer_[i];
 
             if (c == '"') {
-                buffer_.erase(0, i + 1);
+                pos_ = i + 1;
+                compact_buffer_();
                 return {TokenType::String, result, ""};
             }
 
@@ -229,7 +241,7 @@ namespace json {
     }
 
     Token Tokenizer::parse_number_() {
-        size_t i = 0;
+        size_t i = pos_;
         const size_t n = buffer_.size();
 
         auto need_more = [&]() {
@@ -301,8 +313,9 @@ namespace json {
         if (i == n && !input_finished_)
             return {TokenType::NeedMoreData, "", ""};
 
-        std::string num = buffer_.substr(0, i);
-        buffer_.erase(0, i);
+        std::string num = buffer_.substr(pos_, i - pos_);
+        pos_ = i;
+        compact_buffer_();
         return {TokenType::Number, num, ""};
     }
 }

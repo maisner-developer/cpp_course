@@ -31,6 +31,12 @@ namespace json {
     // Public API function to parse JSON input
     ParseResult parse_json(std::string_view input, const ParseLimits& limits = {});
 
+    // Parallel parse for root array/object (splits top-level items)
+    ParseResult parse_json_parallel(std::string_view input,
+                                    size_t threads,
+                                    size_t batch_size = 64,
+                                    const ParseLimits& limits = {});
+
     namespace detail {
         ParseResult parse_object(Tokenizer& tokenizer, const ParseLimits& limits, size_t depth, size_t& node_count);
         ParseResult parse_array(Tokenizer& tokenizer, const ParseLimits& limits, size_t depth, size_t& node_count);

@@ -59,12 +59,14 @@ namespace json {
 
     private:
         std::string buffer_; // internal buffer
+        size_t pos_ = 0;
         bool input_finished_ = false;
         bool has_peeked = false;
         Token peeked;
 
         // helpers
         void skip_whitespace_();
+        void compact_buffer_();
         Token really_read_next_token_();
         Token parse_string_();
         Token parse_number_();

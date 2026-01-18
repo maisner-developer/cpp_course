@@ -3,7 +3,11 @@
 #include "../include/json/schema.hpp"
 
 #include <cassert>
+#include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -13,6 +17,24 @@ using json::ParseError;
 using json::ParseLimits;
 using json::ParseResult;
 using json::Value;
+
+static const char* error_code_to_string(json::ErrorCode code) {
+    switch (code) {
+        case json::ErrorCode::None: return "None";
+        case json::ErrorCode::UnexpectedEnd: return "UnexpectedEnd";
+        case json::ErrorCode::UnexpectedToken: return "UnexpectedToken";
+        case json::ErrorCode::InvalidNumber: return "InvalidNumber";
+        case json::ErrorCode::InvalidString: return "InvalidString";
+        case json::ErrorCode::InvalidEscape: return "InvalidEscape";
+        case json::ErrorCode::InvalidUnicode: return "InvalidUnicode";
+        case json::ErrorCode::DepthLimitExceeded: return "DepthLimitExceeded";
+        case json::ErrorCode::NodeLimitExceeded: return "NodeLimitExceeded";
+        case json::ErrorCode::KeyTooLong: return "KeyTooLong";
+        case json::ErrorCode::StringTooLong: return "StringTooLong";
+        case json::ErrorCode::DuplicateKey: return "DuplicateKey";
+        default: return "Unknown";
+    }
+}
 
 static bool is_error(const ParseResult& r, json::ErrorCode code) {
     if (!std::holds_alternative<ParseError>(r))
@@ -24,6 +46,16 @@ static bool is_error(const ParseResult& r, json::ErrorCode code) {
 static Value require_value(const ParseResult& r) {
     assert(std::holds_alternative<Value>(r));
     return std::get<Value>(r);
+}
+
+static bool read_file(const std::filesystem::path& path, std::string& out) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in)
+        return false;
+    std::ostringstream oss;
+    oss << in.rdbuf();
+    out = oss.str();
+    return true;
 }
 
 static void test_basic_object() {
@@ -195,6 +227,55 @@ static void test_multithreaded_parsing() {
     assert(okCount.load(std::memory_order_relaxed) == static_cast<int>(inputs.size()));
 }
 
+static void test_large_dataset_parsing() {
+    std::filesystem::path root = std::filesystem::path(__FILE__).parent_path().parent_path();
+    std::filesystem::path dataset = root / "gen_dataset.json";
+
+    assert(std::filesystem::exists(dataset));
+
+    std::string content;
+    bool ok = read_file(dataset, content);
+    assert(ok);
+
+    ParseLimits limits;
+    limits.max_total_nodes = content.size();
+    limits.max_string_length = content.size();
+    limits.max_key_length = 1'000'000;
+    limits.max_depth = 512;
+
+    unsigned int threads = std::thread::hardware_concurrency();
+    if (threads == 0) threads = 2;
+
+    auto start = std::chrono::steady_clock::now();
+    auto result = json::parse_json_parallel(content, threads, 64, limits);
+    auto end = std::chrono::steady_clock::now();
+
+    if (std::holds_alternative<ParseError>(result)) {
+        const auto& err = std::get<ParseError>(result);
+        std::cerr << "Parse error: " << error_code_to_string(err.code)
+                  << " (code=" << static_cast<int>(err.code) << ")"
+                  << ", message: " << err.message
+                  << ", position: " << err.position << "\n";
+
+        auto single = json::parse_json(content, limits);
+        if (std::holds_alternative<ParseError>(single)) {
+            const auto& err2 = std::get<ParseError>(single);
+            std::cerr << "Single-thread parse error: " << error_code_to_string(err2.code)
+                      << " (code=" << static_cast<int>(err2.code) << ")"
+                      << ", message: " << err2.message
+                      << ", position: " << err2.position << "\n";
+        } else {
+            std::cerr << "Single-thread parse succeeded; issue likely in parallel splitting.\n";
+        }
+        std::cerr.flush();
+    }
+    assert(std::holds_alternative<Value>(result));
+
+    std::chrono::duration<double> elapsed = end - start;
+    auto size_mb = static_cast<double>(content.size()) / (1024.0 * 1024.0);
+    std::cout << "Dataset size: " << size_mb << " MB, parse time: " << elapsed.count() << " s\n";
+}
+
 int main() {
     test_basic_object();
     test_array_and_string_escape();
@@ -208,6 +289,7 @@ int main() {
     test_schema_type_required_properties_items_enum();
     test_schema_constraints_stage2();
     test_multithreaded_parsing();
+    test_large_dataset_parsing();
 
     std::cout << "All tests passed\n";
     return 0;

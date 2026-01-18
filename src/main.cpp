@@ -19,6 +19,12 @@ struct ParseOutput {
     std::string output;
 };
 
+struct ParallelOptions {
+    bool parse_enabled = false;
+    size_t threads = 0;
+    size_t batch_size = 64;
+};
+
 static bool read_file(const std::filesystem::path& path, std::string& out) {
     std::ifstream in(path, std::ios::binary);
     if (!in)
@@ -29,12 +35,40 @@ static bool read_file(const std::filesystem::path& path, std::string& out) {
     return true;
 }
 
+static std::string serialize_value(const json::Value& v) {
+    std::ostringstream oss;
+    oss << v;
+    return oss.str();
+}
+
+
 } // namespace
 
 int main(int argc, char** argv) {
+    ParallelOptions opts;
+    opts.threads = std::thread::hardware_concurrency();
+    if (opts.threads == 0) opts.threads = 2;
 
-    // No args: read JSON from stdin
-    if (argc == 1) {
+    std::vector<std::string> files;
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if ((arg == "-j" || arg == "--threads") && i + 1 < argc) {
+            opts.threads = static_cast<size_t>(std::max(1, std::stoi(argv[++i])));
+            continue;
+        }
+        if (arg == "--parallel-parse") {
+            opts.parse_enabled = true;
+            continue;
+        }
+        if (arg == "--batch-size" && i + 1 < argc) {
+            opts.batch_size = static_cast<size_t>(std::max(1, std::stoi(argv[++i])));
+            continue;
+        }
+        files.push_back(arg);
+    }
+
+    // No files: read JSON from stdin
+    if (files.empty()) {
         std::ostringstream oss;
         oss << std::cin.rdbuf();
         std::string json_text = oss.str();
@@ -44,7 +78,9 @@ int main(int argc, char** argv) {
             return 1;
         }
 
-        auto result = json::parse_json(json_text);
+        auto result = opts.parse_enabled
+            ? json::parse_json_parallel(json_text, opts.threads, opts.batch_size)
+            : json::parse_json(json_text);
 
         if (std::holds_alternative<json::ParseError>(result)) {
             const auto& err = std::get<json::ParseError>(result);
@@ -55,25 +91,6 @@ int main(int argc, char** argv) {
         const json::Value& root = std::get<json::Value>(result);
         std::cout << root << "\n";
         return 0;
-    }
-
-    // Args: parse multiple files (optionally in parallel)
-    size_t threads = std::thread::hardware_concurrency();
-    if (threads == 0) threads = 2;
-
-    std::vector<std::string> files;
-    for (int i = 1; i < argc; ++i) {
-        std::string arg = argv[i];
-        if ((arg == "-j" || arg == "--threads") && i + 1 < argc) {
-            threads = static_cast<size_t>(std::max(1, std::stoi(argv[++i])));
-            continue;
-        }
-        files.push_back(arg);
-    }
-
-    if (files.empty()) {
-        std::cout << "No input files provided\n";
-        return 1;
     }
 
     std::queue<size_t> queue;
@@ -106,7 +123,9 @@ int main(int argc, char** argv) {
                 continue;
             }
 
-            auto result = json::parse_json(content);
+            auto result = opts.parse_enabled
+                ? json::parse_json_parallel(content, opts.threads, opts.batch_size)
+                : json::parse_json(content);
             if (std::holds_alternative<json::ParseError>(result)) {
                 const auto& err = std::get<json::ParseError>(result);
                 results[idx].ok = false;
@@ -115,16 +134,14 @@ int main(int argc, char** argv) {
             }
 
             const json::Value& root = std::get<json::Value>(result);
-            std::ostringstream oss;
-            oss << root;
             results[idx].ok = true;
-            results[idx].output = oss.str();
+            results[idx].output = serialize_value(root);
         }
     };
 
     std::vector<std::thread> workers;
-    workers.reserve(threads);
-    for (size_t i = 0; i < threads; ++i)
+    workers.reserve(opts.threads);
+    for (size_t i = 0; i < opts.threads; ++i)
         workers.emplace_back(worker);
 
     for (auto& t : workers)
